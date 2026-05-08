@@ -5,136 +5,91 @@ import torch
 import google.generativeai as genai
 import os
 
-# --- PAGE CONFIGURATION ---
-st.set_page_config(page_title="QA/QC LLAA Advisor", page_icon="🏗️", layout="wide")
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="LLAA Intelligent Advisor", page_icon="🏗️", layout="wide")
 
-# --- 1. SECURITY CONFIGURATION (GEMINI) ---
+# --- 1. AI CONFIGURATION (GEMINI) ---
 gemini_key = None
 if "GEMINI_KEY" in st.secrets:
     gemini_key = st.secrets["GEMINI_KEY"]
 else:
     gemini_key = st.sidebar.text_input("Enter Gemini API Key:", type="password")
 
-# --- 2. SEMANTIC MODEL LOADING (LIGHTWEIGHT ENGLISH MODEL) ---
+# --- 2. SEMANTIC MODEL LOADING ---
 @st.cache_resource
-def load_llm_encoder():
-    # Back to the fast, lightweight English-only model (~80MB)
+def load_encoder():
     return SentenceTransformer('all-MiniLM-L6-v2')
 
-# --- 3. ROBUST DATA LOADING ---
+# --- 3. DATA LOADING ---
 @st.cache_data
 def load_data(file_path):
     try:
-        # Reading with semicolon separator as per your generated CSV
-        df = pd.read_csv(file_path, sep=';', engine='python', encoding='utf-8-sig')
+        df = pd.read_csv(file_path, sep=';', engine='python')
+        df.columns = df.columns.str.strip()
+        # Create consolidated search column
+        df['search_text'] = df['Title'] + " " + df['Description'] + " " + df['Knowledge Category']
+        return df
     except Exception as e:
-        st.error(f"Error reading CSV file: {e}")
+        st.error(f"Error loading CSV: {e}")
         return None
 
-    df.columns = df.columns.str.strip()
-    
-    # Map essential columns
-    col_title = 'Title'
-    col_desc = 'Description'
-    col_cat = 'Knowledge Category'
-
-    # Create search text for the encoder
-    df['search_text'] = (
-        "Title: " + df[col_title].fillna('') + ". " +
-        "Category: " + df[col_cat].fillna('') + ". " +
-        "Description: " + df[col_desc].fillna('')
-    )
-    return df, col_title, col_desc, col_cat
-
-# --- 4. AI EXPLANATION FUNCTION (GEMINI) ---
-def get_ai_explanation(query, results_df, api_key):
-    if not api_key:
-        return "⚠️ Please enter the Gemini API Key in the sidebar for AI summary."
-    
+# --- 4. AI EXPLANATION ---
+def get_ai_insight(query, results_df, api_key):
+    if not api_key: return "⚠️ Please provide a Gemini API Key."
     try:
         genai.configure(api_key=api_key)
         model = genai.GenerativeModel('models/gemini-1.5-flash')
-        
-        context = ""
-        for i, row in results_df.iterrows():
-            context += f"\n- {row['Title']}: {row['Description']}. Action: {row['Action Proposed']}\n"
-        
-        prompt = f"""
-        You are a Senior QA/QC Engineering Expert.
-        User Query: "{query}"
-        Relevant Lessons Learned:
-        {context}
-        
-        Provide a technical summary (4 lines) explaining the importance of these lessons 
-        and the main preventive action the user should take. Use professional English.
-        """
-        response = model.generate_content(prompt)
-        return response.text
+        context = "\n".join([f"- {r['Title']}: {r['Description']}" for _, r in results_df.iterrows()])
+        prompt = f"Expert QA/QC Engineer. User asks: {query}. Based on these lessons: {context}. Summarize in 4 lines why these are critical and the main action to take."
+        return model.generate_content(prompt).text
     except Exception as e:
-        return f"Gemini API Error: {e}"
+        return f"AI Error: {e}"
 
-# --- MAIN APP ---
-st.title("🏗️ LLAA Recommender")
-st.markdown("### Smart Advisor for Quality Lessons Learned")
+# --- MAIN INTERFACE ---
+st.title("🏗️ LLAA Intelligent Recommender")
 
-# Load Resources
-model_encoder = load_llm_encoder()
-csv_file = "lecciones_aprendidas_calidad_600_v2.csv"
+encoder = load_encoder()
+csv_path = "lecciones_aprendidas_calidad_600_v2.csv"
 
-if os.path.exists(csv_file):
-    df, c_title, c_desc, c_cat = load_data(csv_file)
+if os.path.exists(csv_path):
+    df = load_data(csv_path)
     
-    # Generate Embeddings (Once)
-    with st.spinner("Indexing 600 unique technical records..."):
-        corpus_embeddings = model_encoder.encode(df['search_text'].tolist(), convert_to_tensor=True)
+    # Pre-compute embeddings
+    with st.spinner("Indexing dataset..."):
+        corpus_embeddings = encoder.encode(df['search_text'].tolist(), convert_to_tensor=True)
 
-    # --- SIDEBAR ---
-    st.sidebar.header("Settings")
-    location = st.sidebar.selectbox("Project Location:", ["Europe (EU)", "Rest of World (Non-EU)"])
-    st.sidebar.divider()
-    st.sidebar.write(f"Database Size: {len(df)} LLAA")
+    # Sidebar Filter
+    st.sidebar.header("Filter Settings")
+    location = st.sidebar.selectbox("Project Region:", ["Europe (EU)", "Rest of World (Non-EU)"])
+    region_code = "EU" if location == "Europe (EU)" else "Non-EU"
 
-    # --- SEARCH ---
-    query = st.text_input("Enter technical issue or scenario:", 
-                         placeholder="e.g. Nitrogen purge loss during storage")
+    # Search Bar
+    query = st.text_input("Describe your quality issue (e.g., welding cracking or painting delamination):")
 
     if query:
-        # Geo-filtering (CE MARKING)
-        df_final = df.copy()
-        valid_indices = list(range(len(df)))
+        # STRICT REGIONAL FILTERING
+        mask = df['Region'] == region_code
+        filtered_df = df[mask].reset_index(drop=True)
+        filtered_embeddings = corpus_embeddings[df[mask].index.tolist()]
 
-        if location == "Rest of World (Non-EU)":
-            mask = df[c_cat].str.contains('CE MARKING', case=False, na=False)
-            df_final = df[~mask].reset_index(drop=True)
-            valid_indices = df[~mask].index.tolist()
+        # SEMANTIC SEARCH
+        query_emb = encoder.encode(query, convert_to_tensor=True)
+        scores = util.cos_sim(query_emb, filtered_embeddings)[0]
+        top_k = torch.topk(scores, k=min(3, len(filtered_df)))
 
-        # Semantic Match
-        query_embedding = model_encoder.encode(query, convert_to_tensor=True)
-        filtered_embeddings = corpus_embeddings[valid_indices]
-        
-        cos_scores = util.cos_sim(query_embedding, filtered_embeddings)[0]
-        top_results = torch.topk(cos_scores, k=min(3, len(df_final)))
+        recommendations = filtered_df.iloc[top_k.indices.tolist()]
 
-        results_to_show = df_final.iloc[top_results.indices.tolist()]
+        # DISPLAY AI INSIGHT
+        st.info("### 🤖 AI Expert Summary")
+        st.write(get_ai_insight(query, recommendations, gemini_key))
 
-        # --- AI SECTION ---
-        st.info("### 🤖 Expert AI Guidance")
-        with st.spinner("Gemini is synthesizing findings..."):
-            explanation = get_ai_explanation(query, results_to_show, gemini_key)
-            st.write(explanation)
+        # DISPLAY INDIVIDUAL LESSONS
+        st.write("### 📂 Top Matching Lessons Learned")
+        for i, (_, row) in enumerate(recommendations.iterrows()):
+            with st.expander(f"📌 {row['Title']} (Score: {top_k.values[i]:.2f})"):
+                st.write(f"**Project:** {row['Project']} | **Category:** {row['Knowledge Category']}")
+                st.write(f"**Description:** {row['Description']}")
+                st.success(f"**Action:** {row['Action Proposed']}")
 
-        # --- RESULTS ---
-        st.write("### 📂 Top Recommended Lessons")
-        for i, (_, row) in enumerate(results_to_show.iterrows()):
-            with st.expander(f"📌 {row[c_title]} (Match: {top_results.values[i]:.2f})"):
-                col1, col2 = st.columns([1, 2])
-                with col1:
-                    st.write(f"**Ref:** {row['LL Ref']}")
-                    st.write(f"**Category:** {row[c_cat]}")
-                    st.write(f"**Project:** {row['Project']}")
-                with col2:
-                    st.write(f"**Description:** {row[c_desc]}")
-                    st.success(f"**Action:** {row['Action Proposed']}")
-                    st.warning(f"**Plan:** {row['Public Comments / Implementation Plan']}")
 else:
-    st.error("Dataset not found. Please run generate_dataset.py first.")
+    st.warning("Please run 'generate_dataset.py' to create the technical database.")
