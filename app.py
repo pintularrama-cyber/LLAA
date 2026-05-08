@@ -72,31 +72,40 @@ if os.path.exists(csv_path):
         filtered_df = df[mask].reset_index(drop=True)
         filtered_embeddings = corpus_embeddings[df[mask].index.tolist()]
 
-       # SEMANTIC SEARCH
+       # --- SEMANTIC SEARCH ---
         query_emb = encoder.encode(query, convert_to_tensor=True)
         scores = util.cos_sim(query_emb, filtered_embeddings)[0]
         
-        # Pedimos 10 resultados en lugar de 3 para tener margen de filtrado
+        # We fetch 10 results to have enough margin to drop duplicates
         top_k_raw = torch.topk(scores, k=min(10, len(filtered_df)))
         
-        # Filtramos para que no haya títulos repetidos en el top 3 final
-        raw_results = filtered_df.iloc[top_k_raw.indices.tolist()]
-        raw_results['score'] = top_k_raw.values.tolist()
+        # Create a temporary DataFrame with the results and their scores
+        raw_results = filtered_df.iloc[top_k_raw.indices.tolist()].copy()
+        raw_results['relevance_score'] = top_k_raw.values.tolist()
         
-        # Eliminamos filas que tengan el mismo Título o Descripción (mantenemos la de mayor score)
+        # REMOVE DUPLICATES: Keep only the most relevant one if titles are identical
         recommendations = raw_results.drop_duplicates(subset=['Title']).head(3)
 
-        # DISPLAY AI INSIGHT
-        st.info("### 🤖 AI Expert Summary")
-        st.write(get_ai_insight(query, recommendations, gemini_key))
+        # --- AI SECTION ---
+        st.info("### 🤖 Expert AI Guidance")
+        with st.spinner("Gemini is synthesizing findings..."):
+            explanation = get_ai_insight(query, recommendations, gemini_key)
+            st.write(explanation)
 
-        # DISPLAY INDIVIDUAL LESSONS
-        st.write("### 📂 Top Matching Lessons Learned")
-        for i, (_, row) in enumerate(recommendations.iterrows()):
-            with st.expander(f"📌 {row['Title']} (Score: {top_k.values[i]:.2f})"):
-                st.write(f"**Project:** {row['Project']} | **Category:** {row['Knowledge Category']}")
-                st.write(f"**Description:** {row['Description']}")
-                st.success(f"**Action:** {row['Action Proposed']}")
-
-else:
-    st.warning("Please run 'generate_dataset.py' to create the technical database.")
+        # --- DISPLAY RESULTS ---
+        st.write("### 📂 Top Recommended Unique Lessons")
+        
+        for _, row in recommendations.iterrows():
+            # We use the score we saved in the dataframe
+            score_val = row['relevance_score']
+            
+            with st.expander(f"📌 {row['Title']} (Match: {score_val:.2f})"):
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.write(f"**Ref:** {row['LL Ref']}")
+                    st.write(f"**Category:** {row['Knowledge Category']}")
+                    st.write(f"**Project:** {row['Project']}")
+                with col2:
+                    st.write(f"**Description:** {row['Description']}")
+                    st.success(f"**Action:** {row['Action Proposed']}")
+                    st.warning(f"**Plan:** Standard Quality implementation. Audit mandatory.")
