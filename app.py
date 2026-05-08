@@ -72,12 +72,19 @@ if os.path.exists(csv_path):
         filtered_df = df[mask].reset_index(drop=True)
         filtered_embeddings = corpus_embeddings[df[mask].index.tolist()]
 
-        # SEMANTIC SEARCH
+       # SEMANTIC SEARCH
         query_emb = encoder.encode(query, convert_to_tensor=True)
         scores = util.cos_sim(query_emb, filtered_embeddings)[0]
-        top_k = torch.topk(scores, k=min(3, len(filtered_df)))
-
-        recommendations = filtered_df.iloc[top_k.indices.tolist()]
+        
+        # Pedimos 10 resultados en lugar de 3 para tener margen de filtrado
+        top_k_raw = torch.topk(scores, k=min(10, len(filtered_df)))
+        
+        # Filtramos para que no haya títulos repetidos en el top 3 final
+        raw_results = filtered_df.iloc[top_k_raw.indices.tolist()]
+        raw_results['score'] = top_k_raw.values.tolist()
+        
+        # Eliminamos filas que tengan el mismo Título o Descripción (mantenemos la de mayor score)
+        recommendations = raw_results.drop_duplicates(subset=['Title']).head(3)
 
         # DISPLAY AI INSIGHT
         st.info("### 🤖 AI Expert Summary")
