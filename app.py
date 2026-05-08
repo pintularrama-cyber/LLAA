@@ -74,8 +74,8 @@ def get_ai_explanation(query, results_df, api_key):
         return f"Gemini API Error: {e}"
 
 # --- MAIN APP ---
-st.title("🏗️ LLAA Intelligent Recommender")
-st.markdown("### Smart Advisor for Engineering Lessons Learned")
+st.title("🏗️ LLAA Recommender")
+st.markdown("### Smart Advisor for Quality Lessons Learned")
 
 # Load Resources
 model_encoder = load_llm_encoder()
